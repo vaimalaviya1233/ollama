@@ -141,46 +141,31 @@ func load(ctx context.Context, workDir string, model *Model, reqOpts map[string]
 	return nil
 }
 
-func GenerateHandler(c *gin.Context) {
-	loaded.mu.Lock()
-	defer loaded.mu.Unlock()
+type GenerateValidationError struct {
+	message string
+}
 
+func (e *GenerateValidationError) Error() string {
+	return e.message
+}
+
+func generate(c *gin.Context, req api.GenerateRequest) (chan any, error) {
 	checkpointStart := time.Now()
 
-	var req api.GenerateRequest
-	err := c.ShouldBindJSON(&req)
-	switch {
-	case errors.Is(err, io.EOF):
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
-		return
-	case err != nil:
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+	loaded.mu.Lock()
+	defer loaded.mu.Unlock()
 
 	// validate the request
 	switch {
 	case req.Model == "":
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
-		return
+		return nil, &GenerateValidationError{"model is required"}
 	case req.Raw && (req.Template != "" || req.System != "" || len(req.Context) > 0):
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "raw mode does not support template, system, or context"})
-		return
-	}
-	if req.Model == "" {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
-		return
+		return nil, &GenerateValidationError{"raw mode does not support template, system, or context"}
 	}
 
 	model, err := GetModel(req.Model)
 	if err != nil {
-		var pErr *fs.PathError
-		if errors.As(err, &pErr) {
-			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found, try pulling it first", req.Model)})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 
 	workDir := c.GetString("workDir")
@@ -188,12 +173,7 @@ func GenerateHandler(c *gin.Context) {
 	// TODO: set this duration from the request if specified
 	sessionDuration := defaultSessionDuration
 	if err := load(c.Request.Context(), workDir, model, req.Options, sessionDuration); err != nil {
-		if errors.Is(err, api.ErrInvalidOpts) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 
 	checkpointLoaded := time.Now()
@@ -202,8 +182,7 @@ func GenerateHandler(c *gin.Context) {
 	if !req.Raw {
 		prompt, err = model.Prompt(req)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			return nil, err
 		}
 	}
 
@@ -239,6 +218,37 @@ func GenerateHandler(c *gin.Context) {
 			ch <- gin.H{"error": err.Error()}
 		}
 	}()
+
+	return ch, nil
+}
+
+func GenerateHandler(c *gin.Context) {
+	var req api.GenerateRequest
+	err := c.ShouldBindJSON(&req)
+	switch {
+	case errors.Is(err, io.EOF):
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
+		return
+	case err != nil:
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ch, err := generate(c, req)
+	if err != nil {
+		var pathErr *fs.PathError
+		var validationErr *GenerateValidationError
+
+		switch {
+		case errors.As(err, &pathErr): // TODO: check this error type
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found, try pulling it first", req.Model)})
+		case errors.As(err, &validationErr), errors.Is(err, api.ErrInvalidOpts):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
 
 	if req.Stream != nil && !*req.Stream {
 		var response api.GenerateResponse
@@ -558,11 +568,19 @@ func GetModelInfo(name string) (*api.ShowResponse, error) {
 }
 
 func ListModelsHandler(c *gin.Context) {
-	models := make([]api.ModelResponse, 0)
-	fp, err := GetManifestPath()
+	models, err := listModels()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	c.JSON(http.StatusOK, api.ListResponse{Models: models})
+}
+
+func listModels() ([]api.ModelResponse, error) {
+	models := make([]api.ModelResponse, 0)
+	fp, err := GetManifestPath()
+	if err != nil {
+		return nil, err
 	}
 
 	walkFunc := func(path string, info os.FileInfo, _ error) error {
@@ -590,11 +608,10 @@ func ListModelsHandler(c *gin.Context) {
 	}
 
 	if err := filepath.Walk(fp, walkFunc); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return nil, err
 	}
 
-	c.JSON(http.StatusOK, api.ListResponse{Models: models})
+	return models, nil
 }
 
 func CopyModelHandler(c *gin.Context) {
@@ -683,6 +700,10 @@ func Serve(ln net.Listener, allowOrigins []string) error {
 	r.POST("/api/copy", CopyModelHandler)
 	r.DELETE("/api/delete", DeleteModelHandler)
 	r.POST("/api/show", ShowModelHandler)
+
+	// openai compatible endpoints
+	r.GET("/openai/v1/models", ListModelsHandler)
+	r.POST("/openai/v1/chat/completions", ChatCompletions)
 
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		r.Handle(method, "/", func(c *gin.Context) {
