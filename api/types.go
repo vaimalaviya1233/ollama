@@ -35,12 +35,26 @@ type GenerateRequest struct {
 	Prompt   string `json:"prompt"`
 	System   string `json:"system"`
 	Template string `json:"template"`
-	Context  []int  `json:"context,omitempty"`
+	Context  []int  `json:"context,omitempty"` // DEPRECATED: context is deprecated, use the /chat endpoint instead for chat history
 	Stream   *bool  `json:"stream,omitempty"`
 	Raw      bool   `json:"raw,omitempty"`
 	Format   string `json:"format"`
 
 	Options map[string]interface{} `json:"options"`
+}
+
+type ChatRequest struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Stream   *bool     `json:"stream,omitempty"`
+	Format   string    `json:"format"`
+
+	Options map[string]interface{} `json:"options"`
+}
+
+type Message struct {
+	Role    string `json:"role"` // one of ["system", "user", "assistant"]
+	Content string `json:"content"`
 }
 
 // Options specfied in GenerateRequest, if you add a new option here add it to the API docs also
@@ -85,6 +99,23 @@ type Runner struct {
 	RopeFrequencyBase  float32 `json:"rope_frequency_base,omitempty"`
 	RopeFrequencyScale float32 `json:"rope_frequency_scale,omitempty"`
 	NumThread          int     `json:"num_thread,omitempty"`
+}
+
+type PredictResponse struct {
+	Model     string    `json:"model"`
+	CreatedAt time.Time `json:"created_at"`
+	Response  string    `json:"response,omitempty"` // the latest response chunk when streaming from /generate
+	Message   *Message  `json:"message,omitempty"`  // the latest message chunk when streaming from /chat
+
+	Done    bool  `json:"done"`
+	Context []int `json:"context,omitempty"`
+
+	TotalDuration      time.Duration `json:"total_duration,omitempty"`
+	LoadDuration       time.Duration `json:"load_duration,omitempty"`
+	PromptEvalCount    int           `json:"prompt_eval_count,omitempty"`
+	PromptEvalDuration time.Duration `json:"prompt_eval_duration,omitempty"`
+	EvalCount          int           `json:"eval_count,omitempty"`
+	EvalDuration       time.Duration `json:"eval_duration,omitempty"`
 }
 
 type EmbeddingRequest struct {
@@ -164,23 +195,7 @@ type TokenResponse struct {
 	Token string `json:"token"`
 }
 
-type GenerateResponse struct {
-	Model     string    `json:"model"`
-	CreatedAt time.Time `json:"created_at"`
-	Response  string    `json:"response"`
-
-	Done    bool  `json:"done"`
-	Context []int `json:"context,omitempty"`
-
-	TotalDuration      time.Duration `json:"total_duration,omitempty"`
-	LoadDuration       time.Duration `json:"load_duration,omitempty"`
-	PromptEvalCount    int           `json:"prompt_eval_count,omitempty"`
-	PromptEvalDuration time.Duration `json:"prompt_eval_duration,omitempty"`
-	EvalCount          int           `json:"eval_count,omitempty"`
-	EvalDuration       time.Duration `json:"eval_duration,omitempty"`
-}
-
-func (r *GenerateResponse) Summary() {
+func (r *PredictResponse) Summary() {
 	if r.TotalDuration > 0 {
 		fmt.Fprintf(os.Stderr, "total duration:       %v\n", r.TotalDuration)
 	}

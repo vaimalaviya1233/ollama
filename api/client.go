@@ -208,11 +208,22 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 	return nil
 }
 
-type GenerateResponseFunc func(GenerateResponse) error
+type PredictResponseFunc func(PredictResponse) error
 
-func (c *Client) Generate(ctx context.Context, req *GenerateRequest, fn GenerateResponseFunc) error {
+func (c *Client) Generate(ctx context.Context, req *GenerateRequest, fn PredictResponseFunc) error {
 	return c.stream(ctx, http.MethodPost, "/api/generate", req, func(bts []byte) error {
-		var resp GenerateResponse
+		var resp PredictResponse
+		if err := json.Unmarshal(bts, &resp); err != nil {
+			return err
+		}
+
+		return fn(resp)
+	})
+}
+
+func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn PredictResponseFunc) error {
+	return c.stream(ctx, http.MethodPost, "/api/chat", req, func(bts []byte) error {
+		var resp PredictResponse
 		if err := json.Unmarshal(bts, &resp); err != nil {
 			return err
 		}

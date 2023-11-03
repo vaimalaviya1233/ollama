@@ -59,6 +59,31 @@ var loaded struct {
 
 var defaultSessionDuration = 5 * time.Minute
 
+// fetchAndLoadModel loads a model into memory if it is not already loaded, it is up to the caller to lock loaded.mu before calling this function
+func fetchAndLoadModel(c *gin.Context, modelName string, options map[string]interface{}, sessionDuration time.Duration) (*Model, error) {
+	model, err := GetModel(modelName)
+	if err != nil {
+		var pErr *fs.PathError
+		if errors.As(err, &pErr) {
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found, try pulling it first", modelName)})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+		return nil, err
+	}
+
+	workDir := c.GetString("workDir")
+	if err := load(c.Request.Context(), workDir, model, options, sessionDuration); err != nil {
+		if errors.Is(err, api.ErrInvalidOpts) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return nil, err
+	}
+	return model, nil
+}
+
 // load a model into memory if it is not already loaded, it is up to the caller to lock loaded.mu before calling this function
 func load(ctx context.Context, workDir string, model *Model, reqOpts map[string]interface{}, sessionDuration time.Duration) error {
 	opts := api.DefaultOptions()
@@ -168,93 +193,154 @@ func GenerateHandler(c *gin.Context) {
 	case len(req.Format) > 0 && req.Format != "json":
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "format must be json"})
 		return
-	case req.Raw && (req.Template != "" || req.System != "" || len(req.Context) > 0):
+	case req.Raw && (len(req.Context) > 0 || req.System != "" || req.Template != ""):
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "raw mode does not support template, system, or context"})
 		return
 	}
 
-	model, err := GetModel(req.Model)
+	sessionDuration := defaultSessionDuration
+	model, err := fetchAndLoadModel(c, req.Model, req.Options, sessionDuration)
 	if err != nil {
-		var pErr *fs.PathError
-		if errors.As(err, &pErr) {
-			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found, try pulling it first", req.Model)})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// error set in request context by fetchAndLoadModel
 		return
 	}
 
-	workDir := c.GetString("workDir")
-
-	// TODO: set this duration from the request if specified
-	sessionDuration := defaultSessionDuration
-	if err := load(c.Request.Context(), workDir, model, req.Options, sessionDuration); err != nil {
-		if errors.Is(err, api.ErrInvalidOpts) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	// an empty request loads the model
+	if req.Prompt == "" && req.Template == "" && req.System == "" {
+		c.JSON(http.StatusOK, api.PredictResponse{CreatedAt: time.Now().UTC(), Model: req.Model, Done: true})
 		return
 	}
 
 	checkpointLoaded := time.Now()
 
-	prompt := req.Prompt
-	if !req.Raw {
-		prompt, err = model.Prompt(req)
+	var prompt string
+	sendContext := false
+	switch {
+	case req.Raw:
+		prompt = req.Prompt
+	case req.Prompt != "":
+		prompt, err = promptFromRequestParams(c, model, req)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			status := http.StatusInternalServerError
+			if errors.Is(err, errInvalidRole) {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
+		sendContext = true
 	}
 
-	ch := make(chan any)
-	go func() {
-		defer close(ch)
-		// an empty request loads the model
-		if req.Prompt == "" && req.Template == "" && req.System == "" {
-			ch <- api.GenerateResponse{CreatedAt: time.Now().UTC(), Model: req.Model, Done: true}
-			return
-		}
-
-		fn := func(r api.GenerateResponse) {
-			loaded.expireAt = time.Now().Add(sessionDuration)
-			loaded.expireTimer.Reset(sessionDuration)
-
-			r.Model = req.Model
-			r.CreatedAt = time.Now().UTC()
-			if r.Done {
-				r.TotalDuration = time.Since(checkpointStart)
-				r.LoadDuration = checkpointLoaded.Sub(checkpointStart)
-			}
-
-			if req.Raw {
-				// in raw mode the client must manage history on their own
-				r.Context = nil
-			}
-
-			ch <- r
-		}
-
-		if err := loaded.runner.Predict(c.Request.Context(), req.Context, prompt, req.Format, fn); err != nil {
-			ch <- gin.H{"error": err.Error()}
-		}
-	}()
+	predict := Predict{
+		Model:            model,
+		Prompt:           prompt,
+		Format:           req.Format,
+		SendContext:      sendContext,
+		CheckpointStart:  checkpointStart,
+		CheckpointLoaded: checkpointLoaded,
+		SessionDuration:  sessionDuration,
+	}
+	ch, generated := predict.Run(c.Request.Context())
 
 	if req.Stream != nil && !*req.Stream {
-		var response api.GenerateResponse
-		generated := ""
+		// Wait for the channel to close
+		var r api.PredictResponse
 		for resp := range ch {
-			if r, ok := resp.(api.GenerateResponse); ok {
-				generated += r.Response
-				response = r
-			} else {
+			var ok bool
+			if r, ok = resp.(api.PredictResponse); !ok {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 		}
-		response.Response = generated
-		c.JSON(http.StatusOK, response)
+		r.Response = generated.String()
+		c.JSON(http.StatusOK, r)
+		return
+	}
+
+	streamResponse(c, ch)
+}
+
+func ChatHandler(c *gin.Context) {
+	loaded.mu.Lock()
+	defer loaded.mu.Unlock()
+
+	checkpointStart := time.Now()
+
+	var req api.ChatRequest
+	err := c.ShouldBindJSON(&req)
+	switch {
+	case errors.Is(err, io.EOF):
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
+		return
+	case err != nil:
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// validate the request
+	switch {
+	case req.Model == "":
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		return
+	case len(req.Format) > 0 && req.Format != "json":
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "format must be json"})
+		return
+	}
+
+	sessionDuration := defaultSessionDuration
+	model, err := fetchAndLoadModel(c, req.Model, req.Options, sessionDuration)
+	if err != nil {
+		// error set in request context by fetchAndLoadModel
+		return
+	}
+
+	// an empty request loads the model
+	if len(req.Messages) == 0 {
+		c.JSON(http.StatusOK, api.PredictResponse{CreatedAt: time.Now().UTC(), Model: req.Model, Done: true})
+		return
+	}
+
+	checkpointLoaded := time.Now()
+
+	prompt, err := promptFromMessages(model, req.Messages)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	predict := Predict{
+		Model:            model,
+		Prompt:           prompt,
+		Format:           req.Format,
+		CheckpointStart:  checkpointStart,
+		CheckpointLoaded: checkpointLoaded,
+		SessionDuration:  sessionDuration,
+		ResponseCallback: func(r *api.PredictResponse) {
+			if len(req.Messages) > 0 && !r.Done {
+				r.Message = &api.Message{Role: "assistant", Content: r.Response}
+				// Do not send back response in the case of messages
+				r.Response = ""
+			}
+		},
+	}
+	ch, generated := predict.Run(c.Request.Context())
+
+	if req.Stream != nil && !*req.Stream {
+		// Wait for the channel to close
+		var r api.PredictResponse
+		for resp := range ch {
+			var ok bool
+			if r, ok = resp.(api.PredictResponse); !ok {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if len(req.Messages) > 0 {
+			r.Message = &api.Message{Role: "assistant", Content: generated.String()}
+		} else {
+			r.Response = generated.String()
+		}
+		c.JSON(http.StatusOK, r)
 		return
 	}
 
@@ -281,15 +367,9 @@ func EmbeddingHandler(c *gin.Context) {
 		return
 	}
 
-	model, err := GetModel(req.Model)
+	_, err = fetchAndLoadModel(c, req.Model, req.Options, defaultSessionDuration)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	workDir := c.GetString("workDir")
-	if err := load(c.Request.Context(), workDir, model, req.Options, 5*time.Minute); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// error set in request context by fetchAndLoadModel
 		return
 	}
 
@@ -757,6 +837,7 @@ func Serve(ln net.Listener, allowOrigins []string) error {
 
 	r.POST("/api/pull", PullModelHandler)
 	r.POST("/api/generate", GenerateHandler)
+	r.POST("/api/chat", ChatHandler)
 	r.POST("/api/embeddings", EmbeddingHandler)
 	r.POST("/api/create", CreateModelHandler)
 	r.POST("/api/push", PushModelHandler)

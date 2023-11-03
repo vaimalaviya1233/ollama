@@ -531,21 +531,9 @@ type prediction struct {
 
 const maxBufferSize = 512 * format.KiloByte
 
-func (llm *llama) Predict(ctx context.Context, prevContext []int, prompt string, format string, fn func(api.GenerateResponse)) error {
-	prevConvo, err := llm.Decode(ctx, prevContext)
-	if err != nil {
-		return err
-	}
-
-	// Remove leading spaces from prevConvo if present
-	prevConvo = strings.TrimPrefix(prevConvo, " ")
-
-	var nextContext strings.Builder
-	nextContext.WriteString(prevConvo)
-	nextContext.WriteString(prompt)
-
+func (llm *llama) Predict(ctx context.Context, prompt string, format string, fn func(api.PredictResponse)) error {
 	request := map[string]any{
-		"prompt":            nextContext.String(),
+		"prompt":            prompt,
 		"stream":            true,
 		"n_predict":         llm.NumPredict,
 		"n_keep":            llm.NumKeep,
@@ -624,19 +612,15 @@ func (llm *llama) Predict(ctx context.Context, prevContext []int, prompt string,
 				}
 
 				if p.Content != "" {
-					fn(api.GenerateResponse{Response: p.Content})
-					nextContext.WriteString(p.Content)
+					fn(api.PredictResponse{
+						Response: p.Content,
+					})
 				}
 
 				if p.Stop {
-					embd, err := llm.Encode(ctx, nextContext.String())
-					if err != nil {
-						return fmt.Errorf("encoding context: %v", err)
-					}
 
-					fn(api.GenerateResponse{
+					fn(api.PredictResponse{
 						Done:               true,
-						Context:            embd,
 						PromptEvalCount:    p.Timings.PromptN,
 						PromptEvalDuration: parseDurationMs(p.Timings.PromptMS),
 						EvalCount:          p.Timings.PredictedN,
