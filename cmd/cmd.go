@@ -533,10 +533,7 @@ func generate(cmd *cobra.Command, model, prompt string, messages []api.Message, 
 
 	if err := client.Generate(cancelCtx, &request, fn); err != nil {
 		if strings.Contains(err.Error(), "context canceled") && abort {
-			return &api.Message{
-				Prompt:   prompt,
-				Response: fullResponse.String(),
-			}, nil
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -547,10 +544,7 @@ func generate(cmd *cobra.Command, model, prompt string, messages []api.Message, 
 
 	if !latest.Done {
 		if abort {
-			return &api.Message{
-				Prompt:   prompt,
-				Response: fullResponse.String(),
-			}, nil
+			return nil, nil
 		}
 		return nil, errors.New("unexpected end of response")
 	}
@@ -564,10 +558,7 @@ func generate(cmd *cobra.Command, model, prompt string, messages []api.Message, 
 		latest.Summary()
 	}
 
-	return &api.Message{
-		Prompt:   prompt,
-		Response: fullResponse.String(),
-	}, nil
+	return &latest.Message, nil
 }
 
 func generateInteractive(cmd *cobra.Command, model string, wordWrap bool, format string) error {
@@ -775,12 +766,12 @@ func generateInteractive(cmd *cobra.Command, model string, wordWrap bool, format
 			prompt += line
 		}
 
-		if len(prompt) > 0 && prompt[0] != '/' {
-			message, err := generate(cmd, model, line, messages, wordWrap, format)
+		if len(line) > 0 && line[0] != '/' {
+			assistant, err := generate(cmd, model, line, messages, wordWrap, format)
 			if err != nil {
 				return err
 			}
-			messages = append(messages, *message)
+			messages = append(messages, *assistant)
 		}
 	}
 }
