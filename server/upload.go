@@ -55,7 +55,7 @@ func (b *blobUpload) Prepare(ctx context.Context, requestURL *url.URL, opts *Reg
 	if b.From != "" {
 		values := requestURL.Query()
 		values.Add("mount", b.Digest)
-		values.Add("from", b.From)
+		values.Add("from", ParseModelPath(b.From).GetNamespaceRepository())
 		requestURL.RawQuery = values.Encode()
 	}
 
