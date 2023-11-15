@@ -558,7 +558,7 @@ func generate(cmd *cobra.Command, model, prompt string, messages []api.Message, 
 		latest.Summary()
 	}
 
-	return &latest.Message, nil
+	return latest.Message, nil
 }
 
 func generateInteractive(cmd *cobra.Command, model string, wordWrap bool, format string) error {
@@ -767,7 +767,8 @@ func generateInteractive(cmd *cobra.Command, model string, wordWrap bool, format
 		}
 
 		if len(line) > 0 && line[0] != '/' {
-			assistant, err := generate(cmd, model, line, messages, wordWrap, format)
+			messages = append(messages, api.Message{Role: "user", Content: line})
+			assistant, err := generate(cmd, model, "", messages, wordWrap, format)
 			if err != nil {
 				return err
 			}
