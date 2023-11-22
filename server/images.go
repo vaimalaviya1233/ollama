@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,27 +48,10 @@ type Model struct {
 	Options       map[string]interface{}
 }
 
-type TemplateVars struct {
-	First  bool
-	System string
-	Prompt string
-}
-
 func (m *Model) Prompt(request api.GenerateRequest) (string, error) {
 	t := m.Template
 	if request.Template != "" {
 		t = request.Template
-	}
-
-	// remove unsupported/deprecated template variables, this prevents a panic when executing the template
-	unsupported := unsupportedTemplateVars(t)
-	if len(unsupported) > 0 {
-		log.Printf("warning: ignoring unsupported template variables: %s", strings.Join(unsupported, ", "))
-	}
-	for _, v := range unsupported {
-		pattern := fmt.Sprintf(`\{\{\s*\.%s\s*\}\}`, regexp.QuoteMeta(v))
-		re := regexp.MustCompile(pattern)
-		t = re.ReplaceAllString(t, "")
 	}
 
 	tmpl, err := template.New("").Parse(t)
@@ -77,11 +59,15 @@ func (m *Model) Prompt(request api.GenerateRequest) (string, error) {
 		return "", err
 	}
 
-	vars := TemplateVars{
-		First:  len(request.Context) == 0,
-		System: m.System,
-		Prompt: request.Prompt,
+	var vars struct {
+		First  bool
+		System string
+		Prompt string
 	}
+
+	vars.First = len(request.Context) == 0
+	vars.System = m.System
+	vars.Prompt = request.Prompt
 
 	if request.System != "" {
 		vars.System = request.System
@@ -93,30 +79,6 @@ func (m *Model) Prompt(request api.GenerateRequest) (string, error) {
 	}
 
 	return sb.String(), nil
-}
-
-func unsupportedTemplateVars(t string) []string {
-	// Regex to find template variables
-	re := regexp.MustCompile(`\{\{\s*\.([^\}\s]+)\s*\}\}`)
-	tempVars := re.FindAllStringSubmatch(t, -1)
-
-	// Use reflection to get field names from the expected vars struct
-	varsType := reflect.TypeOf(TemplateVars{})
-	supported := make(map[string]bool)
-	for i := 0; i < varsType.NumField(); i++ {
-		field := varsType.Field(i)
-		supported[field.Name] = true
-	}
-
-	// Check each match against the struct fields
-	unsupported := []string{}
-	for _, v := range tempVars {
-		varName := v[1] // Extracted variable name
-		if _, exists := supported[varName]; !exists {
-			unsupported = append(unsupported, varName)
-		}
-	}
-	return unsupported
 }
 
 type ManifestV2 struct {
@@ -446,12 +408,6 @@ func CreateModel(ctx context.Context, name, modelFileDir string, commands []pars
 
 			// remove duplicate layers
 			layers = removeLayerFromLayers(layers, mediatype)
-
-			// validate that the template it supported
-			unsupported := unsupportedTemplateVars(c.Args)
-			if len(unsupported) > 0 {
-				return fmt.Errorf("unsupported template variables: %s", strings.Join(unsupported, ", "))
-			}
 
 			layer, err := CreateLayer(strings.NewReader(c.Args))
 			if err != nil {
