@@ -54,23 +54,20 @@ func (m *Model) Prompt(request api.GenerateRequest) (string, error) {
 		t = request.Template
 	}
 
-	tmpl, err := template.New("").Parse(t)
+	// Use the "missingkey=zero" option to handle missing variables without panicking
+	tmpl, err := template.New("").Option("missingkey=zero").Parse(t)
 	if err != nil {
 		return "", err
 	}
 
-	var vars struct {
-		First  bool
-		System string
-		Prompt string
+	vars := map[string]interface{}{
+		"First":  len(request.Context) == 0,
+		"System": m.System,
+		"Prompt": request.Prompt,
 	}
 
-	vars.First = len(request.Context) == 0
-	vars.System = m.System
-	vars.Prompt = request.Prompt
-
 	if request.System != "" {
-		vars.System = request.System
+		vars["System"] = request.System
 	}
 
 	var sb strings.Builder
