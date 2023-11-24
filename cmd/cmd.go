@@ -548,10 +548,25 @@ func generate(cmd *cobra.Command, opts generateOptions) error {
 	}
 
 	if err := client.Generate(cancelCtx, &request, fn); err != nil {
-		if strings.Contains(err.Error(), "context canceled") && abort {
+		switch {
+		case strings.Contains(err.Error(), "context canceled") && abort:
 			return nil
+		case strings.Contains(err.Error(), "unsupported model format"):
+			// pull and retry to see if the model has been updated
+			if err := PullHandler(cmd, []string{model}); err != nil {
+				fmt.Printf("Error: %s\n", err)
+				return fmt.Errorf("unsupported, please update this model to gguf format") // relay the original error
+			}
+			// retry
+			if err := client.Generate(cancelCtx, &request, fn); err != nil {
+				if strings.Contains(err.Error(), "context canceled") && abort {
+					return nil
+				}
+				return err
+			}
+		default:
+			return err
 		}
-		return err
 	}
 	if opts.Prompt != "" {
 		fmt.Println()

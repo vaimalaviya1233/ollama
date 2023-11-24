@@ -76,16 +76,8 @@ func New(workDir, model string, adapters []string, opts api.Options) (LLM, error
 		}
 	}
 
-	switch ggml.Name() {
-	case "gguf":
-		// TODO: gguf will load these options automatically from the model binary
-		opts.NumGQA = 0
-		opts.RopeFrequencyBase = 0.0
-		opts.RopeFrequencyScale = 0.0
-		return newLlama(model, adapters, chooseRunners(workDir, "gguf"), ggml.NumLayers(), opts)
-	case "ggml", "ggmf", "ggjt", "ggla":
-		return newLlama(model, adapters, chooseRunners(workDir, "ggml"), ggml.NumLayers(), opts)
-	default:
-		return nil, fmt.Errorf("unknown ggml type: %s", ggml.ModelFamily())
-	}
+	opts.NumGQA = 0
+	opts.RopeFrequencyBase = 0.0
+	opts.RopeFrequencyScale = 0.0
+	return newLlama(model, adapters, chooseRunners(workDir), ggml.NumLayers(), opts)
 }

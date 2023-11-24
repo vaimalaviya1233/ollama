@@ -189,11 +189,12 @@ func GenerateHandler(c *gin.Context) {
 	// TODO: set this duration from the request if specified
 	sessionDuration := defaultSessionDuration
 	if err := load(c.Request.Context(), workDir, model, req.Options, sessionDuration); err != nil {
-		if errors.Is(err, api.ErrInvalidOpts) {
+		switch {
+		case errors.Is(err, api.ErrInvalidOpts), errors.Is(err, llm.ErrUnsupportedFormat):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

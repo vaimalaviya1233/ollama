@@ -63,8 +63,8 @@ type ModelRunner struct {
 	Accelerated bool
 }
 
-func chooseRunners(workDir, runnerType string) []ModelRunner {
-	buildPath := path.Join("llama.cpp", runnerType, "build")
+func chooseRunners(workDir string) []ModelRunner {
+	buildPath := path.Join("llama.cpp", "gguf", "build")
 	var runners []ModelRunner
 
 	// set the runners based on the OS
@@ -140,7 +140,7 @@ func chooseRunners(workDir, runnerType string) []ModelRunner {
 		}
 	}
 	if !runnerAvailable {
-		log.Fatalf("%s runner not found", runnerType)
+		log.Fatalf("gguf runner not found")
 	}
 
 	// return the runners to try in priority order
