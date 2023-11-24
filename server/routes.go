@@ -539,9 +539,10 @@ func GetModelInfo(name string) (*api.ShowResponse, error) {
 	}
 
 	resp := &api.ShowResponse{
-		License:  strings.Join(model.License, "\n"),
-		System:   model.System,
-		Template: model.Template,
+		License:     strings.Join(model.License, "\n"),
+		System:      model.System,
+		Template:    model.Template,
+		ModelFormat: "TODO",
 	}
 
 	mf, err := ShowModelfile(model)

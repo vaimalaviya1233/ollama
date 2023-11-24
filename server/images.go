@@ -46,6 +46,8 @@ type Model struct {
 	License       []string
 	Digest        string
 	Options       map[string]interface{}
+	// Information about the model
+	ModelDetails
 }
 
 func (m *Model) Prompt(request api.GenerateRequest) (string, error) {
@@ -100,12 +102,16 @@ type LayerReader struct {
 	io.Reader
 }
 
-type ConfigV2 struct {
+type ModelDetails struct {
 	ModelFormat string `json:"model_format"`
 	ModelFamily string `json:"model_family"`
 	ModelType   string `json:"model_type"`
 	FileType    string `json:"file_type"`
-	RootFS      RootFS `json:"rootfs"`
+}
+
+type ConfigV2 struct {
+	ModelDetails
+	RootFS RootFS `json:"rootfs"`
 
 	// required by spec
 	Architecture string `json:"architecture"`
@@ -153,11 +159,36 @@ func GetManifest(mp ModelPath) (*ManifestV2, string, error) {
 	return manifest, shaStr, nil
 }
 
+func GetConfig(manifest *ManifestV2) (*ConfigV2, error) {
+	path, err := GetBlobsPath(manifest.Config.Digest)
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var config ConfigV2
+	if err := json.NewDecoder(file).Decode(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
 func GetModel(name string) (*Model, error) {
 	mp := ParseModelPath(name)
 	manifest, digest, err := GetManifest(mp)
 	if err != nil {
 		return nil, err
+	}
+
+	config, err := GetConfig(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("get model config: %w", err)
 	}
 
 	model := &Model{
@@ -166,6 +197,12 @@ func GetModel(name string) (*Model, error) {
 		Digest:    digest,
 		Template:  "{{ .Prompt }}",
 		License:   []string{},
+		ModelDetails: ModelDetails{
+			ModelFormat: config.ModelFormat,
+			ModelFamily: config.ModelFamily,
+			ModelType:   config.ModelType,
+			FileType:    config.FileType,
+		},
 	}
 
 	for _, layer := range manifest.Layers {
@@ -302,20 +339,10 @@ func CreateModel(ctx context.Context, name, modelFileDir string, commands []pars
 				}
 
 				fn(api.ProgressResponse{Status: "reading model metadata"})
-				fromConfigPath, err := GetBlobsPath(manifest.Config.Digest)
-				if err != nil {
-					return err
-				}
 
-				fromConfigFile, err := os.Open(fromConfigPath)
+				fromConfig, err := GetConfig(manifest)
 				if err != nil {
-					return err
-				}
-				defer fromConfigFile.Close()
-
-				var fromConfig ConfigV2
-				if err := json.NewDecoder(fromConfigFile).Decode(&fromConfig); err != nil {
-					return err
+					return fmt.Errorf("from config: %w", err)
 				}
 
 				config.ModelFormat = fromConfig.ModelFormat

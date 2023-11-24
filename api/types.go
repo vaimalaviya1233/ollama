@@ -114,11 +114,17 @@ type ShowRequest struct {
 }
 
 type ShowResponse struct {
+	// fields defined in the modelfile
 	License    string `json:"license,omitempty"`
 	Modelfile  string `json:"modelfile,omitempty"`
 	Parameters string `json:"parameters,omitempty"`
 	Template   string `json:"template,omitempty"`
 	System     string `json:"system,omitempty"`
+	// fields defined in the manifest config
+	ModelFormat string `json:"model_format,omitempty"`
+	ModelFamily string `json:"model_family,omitempty"`
+	ModelType   string `json:"model_type,omitempty"`
+	FileType    string `json:"file_type,omitempty"`
 }
 
 type CopyRequest struct {
