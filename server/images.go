@@ -344,24 +344,33 @@ func CreateModel(ctx context.Context, name, modelFileDir string, commands []pars
 			}
 			defer bin.Close()
 
-			fn(api.ProgressResponse{Status: "creating model layer"})
-			ggml, err := llm.DecodeGGML(bin)
-			if err != nil {
-				return err
+			var offset int64
+			for {
+				fn(api.ProgressResponse{Status: "creating model layer"})
+
+				bin.Seek(offset, io.SeekStart)
+				ggml, err := llm.DecodeGGML(bin)
+				if errors.Is(err, io.EOF) {
+					break
+				} else if err != nil {
+					return err
+				}
+
+				config.ModelFormat = ggml.Name()
+				config.ModelFamily = ggml.ModelFamily()
+				config.ModelType = ggml.ModelType()
+				config.FileType = ggml.FileType()
+
+				sr := io.NewSectionReader(bin, offset, ggml.Size)
+				layer, err := NewLayer(sr, mediatype)
+				if err != nil {
+					return err
+				}
+
+				layers.Add(layer)
+
+				offset += ggml.Size
 			}
-
-			config.ModelFormat = ggml.Name()
-			config.ModelFamily = ggml.ModelFamily()
-			config.ModelType = ggml.ModelType()
-			config.FileType = ggml.FileType()
-
-			bin.Seek(0, io.SeekStart)
-			layer, err := NewLayer(bin, mediatype)
-			if err != nil {
-				return err
-			}
-
-			layers.Add(layer)
 		case "adapter":
 			fn(api.ProgressResponse{Status: "creating adapter layer"})
 			bin, err := os.Open(realpath(modelFileDir, c.Args))
