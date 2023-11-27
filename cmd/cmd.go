@@ -560,7 +560,7 @@ func generate(cmd *cobra.Command, opts generateOptions) error {
 			}
 			if err := PullHandler(cmd, []string{model}); err != nil {
 				fmt.Printf("Error: %s\n", err)
-				return fmt.Errorf("unsupported, please update this model to gguf format") // relay the original error
+				return fmt.Errorf("unsupported model, please update this model to gguf format") // relay the original error
 			}
 			// retry
 			if err := client.Generate(cancelCtx, &request, fn); err != nil {
