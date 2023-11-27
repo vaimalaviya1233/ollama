@@ -168,11 +168,8 @@ func GenerateHandler(c *gin.Context) {
 	case len(req.Format) > 0 && req.Format != "json":
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "format must be json"})
 		return
-	case req.Raw && (len(req.Context) > 0 || len(req.Messages) > 0 || req.System != "" || req.Template != ""):
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "raw mode does not support template, system, context, or messages"})
-		return
-	case len(req.Messages) > 0 && (len(req.Context) > 0 || req.Raw || req.System != "" || req.Template != "" || req.Prompt != ""):
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "cannot specify context, raw, system, template, or prompt when using messages"})
+	case req.Raw && (len(req.Context) > 0 || req.System != "" || req.Template != ""):
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "raw mode does not support template, system, or context"})
 		return
 	}
 
@@ -207,12 +204,6 @@ func GenerateHandler(c *gin.Context) {
 	switch {
 	case req.Raw:
 		prompt = req.Prompt
-	case len(req.Messages) > 0:
-		prompt, err = promptFromMessages(model, req.Messages)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
 	case req.Prompt != "":
 		prompt, err = promptFromRequestParams(c, model, req)
 		if err != nil {
@@ -232,11 +223,11 @@ func GenerateHandler(c *gin.Context) {
 		defer close(ch)
 		// an empty request loads the model
 		if req.Empty() {
-			ch <- api.GenerateResponse{CreatedAt: time.Now().UTC(), Model: req.Model, Done: true}
+			ch <- api.PredictResponse{CreatedAt: time.Now().UTC(), Model: req.Model, Done: true}
 			return
 		}
 
-		fn := func(r api.GenerateResponse) {
+		fn := func(r api.PredictResponse) {
 			loaded.expireAt = time.Now().Add(sessionDuration)
 			loaded.expireTimer.Reset(sessionDuration)
 
@@ -263,13 +254,6 @@ func GenerateHandler(c *gin.Context) {
 				}
 			}
 
-			// determine if the client should get a prompt/response or message
-			if len(req.Messages) > 0 && !r.Done {
-				r.Message = &api.Message{Role: "assistant", Content: r.Response}
-				// do not send back response in the case of messages
-				r.Response = ""
-			}
-
 			ch <- r
 		}
 
@@ -280,19 +264,15 @@ func GenerateHandler(c *gin.Context) {
 
 	if req.Stream != nil && !*req.Stream {
 		// Wait for the channel to close
-		var r api.GenerateResponse
+		var r api.PredictResponse
 		for resp := range ch {
 			var ok bool
-			if r, ok = resp.(api.GenerateResponse); !ok {
+			if r, ok = resp.(api.PredictResponse); !ok {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 		}
-		if len(req.Messages) > 0 {
-			r.Message = &api.Message{Role: "assistant", Content: generated.String()}
-		} else {
-			r.Response = generated.String()
-		}
+		r.Response = generated.String()
 		c.JSON(http.StatusOK, r)
 		return
 	}
@@ -327,6 +307,127 @@ func promptFromRequestParams(c *gin.Context, model *Model, req api.GenerateReque
 	}
 	prompt.WriteString(p)
 	return prompt.String(), nil
+}
+
+func ChatHandler(c *gin.Context) {
+	loaded.mu.Lock()
+	defer loaded.mu.Unlock()
+
+	checkpointStart := time.Now()
+
+	var req api.ChatRequest
+	err := c.ShouldBindJSON(&req)
+	switch {
+	case errors.Is(err, io.EOF):
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
+		return
+	case err != nil:
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// validate the request
+	switch {
+	case req.Model == "":
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		return
+	case len(req.Format) > 0 && req.Format != "json":
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "format must be json"})
+		return
+	}
+
+	model, err := GetModel(req.Model)
+	if err != nil {
+		var pErr *fs.PathError
+		if errors.As(err, &pErr) {
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found, try pulling it first", req.Model)})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	workDir := c.GetString("workDir")
+
+	// TODO: set this duration from the request if specified
+	sessionDuration := defaultSessionDuration
+	if err := load(c.Request.Context(), workDir, model, req.Options, sessionDuration); err != nil {
+		if errors.Is(err, api.ErrInvalidOpts) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	checkpointLoaded := time.Now()
+
+	prompt, err := promptFromMessages(model, req.Messages)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var generated strings.Builder
+	ch := make(chan any)
+	go func() {
+		defer close(ch)
+		// an empty request loads the model
+		if len(req.Messages) == 0 {
+			ch <- api.PredictResponse{CreatedAt: time.Now().UTC(), Model: req.Model, Done: true}
+			return
+		}
+
+		fn := func(r api.PredictResponse) {
+			loaded.expireAt = time.Now().Add(sessionDuration)
+			loaded.expireTimer.Reset(sessionDuration)
+
+			r.Model = req.Model
+			r.CreatedAt = time.Now().UTC()
+
+			// build up the full response to send back the context
+			if _, err := generated.WriteString(r.Response); err != nil {
+				ch <- gin.H{"error": err.Error()}
+				return
+			}
+
+			if r.Done {
+				r.TotalDuration = time.Since(checkpointStart)
+				r.LoadDuration = checkpointLoaded.Sub(checkpointStart)
+			} else {
+				r.Message = &api.Message{Role: "assistant", Content: r.Response}
+				// do not send back response in the case of messages
+				r.Response = ""
+			}
+
+			ch <- r
+		}
+
+		if err := loaded.runner.Predict(c.Request.Context(), prompt, req.Format, fn); err != nil {
+			ch <- gin.H{"error": err.Error()}
+		}
+	}()
+
+	if req.Stream != nil && !*req.Stream {
+		// Wait for the channel to close
+		var r api.PredictResponse
+		for resp := range ch {
+			var ok bool
+			if r, ok = resp.(api.PredictResponse); !ok {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if len(req.Messages) > 0 {
+			r.Message = &api.Message{Role: "assistant", Content: generated.String()}
+		} else {
+			r.Response = generated.String()
+		}
+		c.JSON(http.StatusOK, r)
+		return
+	}
+
+	streamResponse(c, ch)
 }
 
 var errInvalidRole = errors.New("invalid message role")
@@ -876,6 +977,7 @@ func Serve(ln net.Listener, allowOrigins []string) error {
 
 	r.POST("/api/pull", PullModelHandler)
 	r.POST("/api/generate", GenerateHandler)
+	r.POST("/api/chat", GenerateHandler)
 	r.POST("/api/embeddings", EmbeddingHandler)
 	r.POST("/api/create", CreateModelHandler)
 	r.POST("/api/push", PushModelHandler)

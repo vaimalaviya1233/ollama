@@ -470,7 +470,7 @@ func generate(cmd *cobra.Command, wordWrap bool, request api.GenerateRequest) (*
 	spinner := progress.NewSpinner("")
 	p.Add("", spinner)
 
-	var latest api.GenerateResponse
+	var latest api.PredictResponse
 
 	termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
@@ -496,7 +496,7 @@ func generate(cmd *cobra.Command, wordWrap bool, request api.GenerateRequest) (*
 	var role string
 	var fullResponse strings.Builder
 
-	fn := func(generated api.GenerateResponse) error {
+	fn := func(generated api.PredictResponse) error {
 		p.StopAndClear()
 
 		latest = generated

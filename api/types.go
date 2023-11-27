@@ -31,14 +31,22 @@ func (e StatusError) Error() string {
 }
 
 type GenerateRequest struct {
+	Model    string `json:"model"`
+	Prompt   string `json:"prompt"`
+	System   string `json:"system"`
+	Template string `json:"template"`
+	Context  []int  `json:"context,omitempty"` // DEPRECATED: context is deprecated, use messages instead
+	Stream   *bool  `json:"stream,omitempty"`
+	Raw      bool   `json:"raw,omitempty"`
+	Format   string `json:"format"`
+
+	Options map[string]interface{} `json:"options"`
+}
+
+type ChatRequest struct {
 	Model    string    `json:"model"`
-	Prompt   string    `json:"prompt"`
-	System   string    `json:"system"`
-	Template string    `json:"template"`
-	Context  []int     `json:"context,omitempty"` // DEPRECATED: context is deprecated, use messages instead
 	Messages []Message `json:"messages,omitempty"`
 	Stream   *bool     `json:"stream,omitempty"`
-	Raw      bool      `json:"raw,omitempty"`
 	Format   string    `json:"format"`
 
 	Options map[string]interface{} `json:"options"`
@@ -93,7 +101,7 @@ type Runner struct {
 	NumThread          int     `json:"num_thread,omitempty"`
 }
 
-type GenerateResponse struct {
+type PredictResponse struct {
 	Model     string    `json:"model"`
 	CreatedAt time.Time `json:"created_at"`
 	Response  string    `json:"response,omitempty"` // the latest response chunk when streaming
@@ -188,10 +196,10 @@ type TokenResponse struct {
 }
 
 func (r *GenerateRequest) Empty() bool {
-	return r.Prompt == "" && r.Template == "" && r.System == "" && len(r.Messages) == 0
+	return r.Prompt == "" && r.Template == "" && r.System == ""
 }
 
-func (r *GenerateResponse) Summary() {
+func (r *PredictResponse) Summary() {
 	if r.TotalDuration > 0 {
 		fmt.Fprintf(os.Stderr, "total duration:       %v\n", r.TotalDuration)
 	}

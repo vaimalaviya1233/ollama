@@ -531,7 +531,7 @@ type prediction struct {
 
 const maxBufferSize = 512 * format.KiloByte
 
-func (llm *llama) Predict(ctx context.Context, prompt string, format string, fn func(api.GenerateResponse)) error {
+func (llm *llama) Predict(ctx context.Context, prompt string, format string, fn func(api.PredictResponse)) error {
 	request := map[string]any{
 		"prompt":            prompt,
 		"stream":            true,
@@ -612,14 +612,14 @@ func (llm *llama) Predict(ctx context.Context, prompt string, format string, fn 
 				}
 
 				if p.Content != "" {
-					fn(api.GenerateResponse{
+					fn(api.PredictResponse{
 						Response: p.Content,
 					})
 				}
 
 				if p.Stop {
 
-					fn(api.GenerateResponse{
+					fn(api.PredictResponse{
 						Done:               true,
 						PromptEvalCount:    p.Timings.PromptN,
 						PromptEvalDuration: parseDurationMs(p.Timings.PromptMS),
