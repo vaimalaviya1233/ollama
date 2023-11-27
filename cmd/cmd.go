@@ -553,6 +553,11 @@ func generate(cmd *cobra.Command, opts generateOptions) error {
 			return nil
 		case strings.Contains(err.Error(), "unsupported model format"):
 			// pull and retry to see if the model has been updated
+			parts := strings.Split(model, string(os.PathSeparator))
+			if len(parts) == 1 {
+				// this is a library model, log some info
+				fmt.Fprintln(os.Stderr, "This model is no longer compatible with Ollama. Pulling a new version...")
+			}
 			if err := PullHandler(cmd, []string{model}); err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return fmt.Errorf("unsupported, please update this model to gguf format") // relay the original error

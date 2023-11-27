@@ -317,6 +317,27 @@ func CreateModel(ctx context.Context, name, modelFileDir string, commands []pars
 					return err
 				}
 
+				// if the model is not in gguf format, pull the base model to try and get it in gguf format
+				if fromConfig.ModelFormat != "gguf" {
+					fn(api.ProgressResponse{Status: "updating base model"})
+					if err := PullModel(ctx, c.Args, &RegistryOptions{}, fn); err != nil {
+						log.Printf("error pulling model: %v", err)
+					}
+					// Reset the file pointer to the beginning of the file
+					_, err = fromConfigFile.Seek(0, 0)
+					if err != nil {
+						return fmt.Errorf("update from config after pull: %w", err)
+					}
+					if err := json.NewDecoder(fromConfigFile).Decode(&fromConfig); err != nil {
+						return err
+					}
+				}
+
+				// if the model is still not in gguf format, error out
+				if fromConfig.ModelFormat != "gguf" {
+					return fmt.Errorf("%s is not in gguf format, this base model is not compatible with this version of ollama", c.Args)
+				}
+
 				config.ModelFormat = fromConfig.ModelFormat
 				config.ModelFamily = fromConfig.ModelFamily
 				config.ModelType = fromConfig.ModelType
@@ -355,16 +376,17 @@ func CreateModel(ctx context.Context, name, modelFileDir string, commands []pars
 			}
 			defer bin.Close()
 
+			// this is a directly specified model file
 			fn(api.ProgressResponse{Status: "creating model layer"})
-			ggml, err := llm.DecodeGGML(bin)
+			gguf, err := llm.DecodeGGML(bin)
 			if err != nil {
-				return err
+				return fmt.Errorf("model binary specified in FROM field is not a valid gguf format model, %w", err)
 			}
 
-			config.ModelFormat = ggml.Name()
-			config.ModelFamily = ggml.ModelFamily()
-			config.ModelType = ggml.ModelType()
-			config.FileType = ggml.FileType()
+			config.ModelFormat = gguf.Name()
+			config.ModelFamily = gguf.ModelFamily()
+			config.ModelType = gguf.ModelType()
+			config.FileType = gguf.FileType()
 
 			bin.Seek(0, io.SeekStart)
 			layer, err := CreateLayer(bin)
