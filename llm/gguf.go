@@ -214,11 +214,13 @@ func (llm *ggufModel) Decode(rso *readSeekOffset) error {
 			return err
 		}
 
+		// dims is the number of dimensions in the tensor
 		dims := llm.readU32(rso)
 
-		nes := [4]uint64{1, 1, 1, 1}
+		// ne is the number of elements in each dimension
+		ne := [4]uint64{1, 1, 1, 1}
 		for i := 0; uint32(i) < dims; i++ {
-			nes[i] = llm.readU64(rso)
+			ne[i] = llm.readU64(rso)
 		}
 
 		kind := llm.readU32(rso)
@@ -264,18 +266,18 @@ func (llm *ggufModel) Decode(rso *readSeekOffset) error {
 			typeSize = blockSize/2 + blockSize/4 + blockSize/16 + 2
 		}
 
-		ne := nes[0] * nes[1] * nes[2] * nes[3]
-		size := ne * typeSize / blockSize
+		parameters := ne[0] * ne[1] * ne[2] * ne[3]
+		size := parameters * typeSize / blockSize
 
 		llm.tensors = append(llm.tensors, tensor{
 			name:   name,
 			kind:   kind,
 			offset: offset,
 			size:   size,
-			ne:     nes,
+			ne:     ne,
 		})
 
-		llm.parameters += ne
+		llm.parameters += parameters
 	}
 
 	alignment, ok := llm.kv["general.alignment"].(uint32)
