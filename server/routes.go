@@ -103,7 +103,7 @@ func load(ctx context.Context, workDir string, model *Model, reqOpts map[string]
 			// show a generalized compatibility error until there is a better way to
 			// check for model compatibility
 			if errors.Is(llm.ErrUnsupportedFormat, err) || strings.Contains(err.Error(), "failed to load model") {
-				err = fmt.Errorf("%v: this model may be incompatible with your version of ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, model.ShortName)
+				err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, model.ShortName)
 			}
 
 			return err
